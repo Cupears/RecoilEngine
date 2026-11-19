@@ -2,4 +2,4 @@
 
 I'm porting Beyond All Reason to Android through my fork of [Recoil Engine](https://github.com/beyond-all-reason/RecoilEngine). My goal is to play a full match on my phone.
 
-I've tested launching a local skirmish from the Android app. I can pan the terrain while the match runs. I'm working on showing live units and controlling them by touch.
+I've tested starting a local skirmish, panning the terrain, and moving my commander by touch. The commander shows up as a marker while I work on displaying the full unit model.

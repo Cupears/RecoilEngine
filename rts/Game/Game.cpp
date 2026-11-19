@@ -99,6 +99,15 @@
 #include "Sim/Units/Scripts/UnitScriptEngine.h"
 #include "Sim/Units/UnitHandler.h"
 #include "Sim/Units/UnitDefHandler.h"
+
+#if defined(__ANDROID__) && defined(HEADLESS)
+#include "builds/legacy/android/MatchSmokeFiles.h"
+#include "Map/Ground.h"
+#include "Sim/Units/Unit.h"
+#include "Sim/Units/UnitDef.h"
+#include <cmath>
+#include <cstdlib>
+#endif
 #include "Sim/Weapons/WeaponDefHandler.h"
 #include "Sim/Weapons/WeaponLoader.h"
 #include "UI/CommandColors.h"
@@ -1207,6 +1216,40 @@ bool CGame::Update()
 	}
 
 	LEAVE_SYNCED_CODE();
+
+#if defined(__ANDROID__) && defined(HEADLESS)
+	static const bool matchSmoke = std::getenv("RECOIL_ANDROID_MATCH_SMOKE") != nullptr;
+	static int lastPublishedFrame = -1;
+	static uint32_t lastMove = 0;
+	if (matchSmoke && playing && !gameOver && !gu->spectating && gs->frameNum >= lastPublishedFrame + 5) {
+		lastPublishedFrame = gs->frameNum;
+		CUnit* commander = nullptr;
+		for (CUnit* unit : unitHandler.GetActiveUnits()) {
+			if (unit->team == gu->myTeam && !unit->isDead &&
+			    unit->unitDef->customParams.find("iscommander") != unit->unitDef->customParams.end()) {
+				commander = unit;
+				break;
+			}
+		}
+		using namespace AndroidMatchSmoke;
+		const Position position = commander ? Position{commander->pos.x, commander->pos.y, commander->pos.z} :
+		                                      Position{-1, 0, -1};
+		Write("commander.bin", "commander.tmp", position);
+		Move order = {};
+		if (Read("move.bin", order) && order.sequence > lastMove) {
+			lastMove = order.sequence;
+			if (commander && std::isfinite(order.x) && std::isfinite(order.z) &&
+			    order.x >= 0 && order.x < mapDims.mapx * SQUARE_SIZE &&
+			    order.z >= 0 && order.z < mapDims.mapy * SQUARE_SIZE) {
+				selectedUnitsHandler.ClearSelected();
+				selectedUnitsHandler.AddUnit(commander);
+				selectedUnitsHandler.GiveCommand(Command(CMD_MOVE,
+					float3(order.x, CGround::GetHeightReal(order.x, order.z), order.z)));
+				LOG("[Android match smoke] Sent commander move order");
+			}
+		}
+	}
+#endif
 
 	{
 		SLuaAllocError error = {};
