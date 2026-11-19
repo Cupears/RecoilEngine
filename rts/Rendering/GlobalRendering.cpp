@@ -603,6 +603,114 @@ static GLuint BuildAndroidTerrainProgram(const char* name, const char* defines, 
 	return program;
 }
 
+struct AndroidCommanderModel {
+	GLuint program = 0, vao = 0, buffer = 0, textures[2] = {};
+	GLint camera = -1, origin = -1, facing = -1;
+	GLsizei vertices = 0;
+
+	static std::vector<unsigned char> ReadAsset(const char* path, size_t limit)
+	{
+		std::unique_ptr<SDL_RWops, decltype(&SDL_RWclose)> file(SDL_RWFromFile(path, "rb"), SDL_RWclose);
+		const Sint64 bytes = file ? SDL_RWsize(file.get()) : -1;
+		if (bytes <= 0 || bytes > Sint64(limit))
+			return {};
+		std::vector<unsigned char> data(bytes);
+		if (SDL_RWread(file.get(), data.data(), 1, data.size()) != data.size())
+			return {};
+		return data;
+	}
+
+	void Load()
+	{
+		constexpr size_t stride = 8 * sizeof(float);
+		const auto mesh = ReadAsset("commander/unit-mesh.bin", 4 * 1024 * 1024);
+		if (mesh.empty() || mesh.size() % (3 * stride) != 0)
+			return;
+		constexpr int side = 1024;
+		constexpr size_t textureBytes = side * side * 4;
+		const auto color = ReadAsset("commander/unit-color.rgba", textureBytes);
+		const auto material = ReadAsset("commander/unit-material.rgba", textureBytes);
+		if (color.size() != textureBytes || material.size() != textureBytes)
+			return;
+
+		constexpr auto vertex = R"glsl(
+			layout(location = 0) in vec3 position;
+			layout(location = 1) in vec2 uv;
+			layout(location = 2) in vec3 normal;
+			uniform mat4 projection;
+			uniform vec3 origin;
+			uniform vec2 facing;
+			out vec3 vuvw;
+			out vec4 vColor;
+			vec3 rotate(vec3 v) {
+				return vec3(facing.y * v.x + facing.x * v.z, v.y, -facing.x * v.x + facing.y * v.z);
+			}
+			void main() {
+				gl_Position = projection * vec4(origin + rotate(position), 1.0);
+				vuvw = vec3(uv, 0.0);
+				vColor = vec4(rotate(normal), 1.0);
+			}
+		)glsl";
+		program = BuildAndroidTerrainProgram("commander", "", vertex, AndroidTerrainShaderSources::UnitFragment);
+		if (!program)
+			return;
+
+		glGenVertexArrays(1, &vao);
+		glBindVertexArray(vao);
+		glGenBuffers(1, &buffer);
+		glBindBuffer(GL_ARRAY_BUFFER, buffer);
+		glBufferData(GL_ARRAY_BUFFER, mesh.size(), mesh.data(), GL_STATIC_DRAW);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(3 * sizeof(float)));
+		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(5 * sizeof(float)));
+		for (GLuint i = 0; i < 3; ++i)
+			glEnableVertexAttribArray(i);
+
+		glGenTextures(2, textures);
+		const unsigned char* pixels[] = {color.data(), material.data()};
+		for (unsigned i = 0; i < 2; ++i) {
+			glBindTexture(GL_TEXTURE_2D, textures[i]);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, side, side, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels[i]);
+			glGenerateMipmap(GL_TEXTURE_2D);
+		}
+
+		glUseProgram(program);
+		glUniform1i(glGetUniformLocation(program, "colorTexture"), 0);
+		glUniform1i(glGetUniformLocation(program, "materialTexture"), 4);
+		glUniform3f(glGetUniformLocation(program, "teamColor"), 1.0f, 0.48f, 0.12f);
+		camera = glGetUniformLocation(program, "projection");
+		origin = glGetUniformLocation(program, "origin");
+		facing = glGetUniformLocation(program, "facing");
+		vertices = mesh.size() / stride;
+	}
+
+	void Draw(const float* projection, const AndroidMatchSmoke::Position& position, float height) const
+	{
+		glUseProgram(program);
+		glBindVertexArray(vao);
+		glUniformMatrix4fv(camera, 1, GL_FALSE, projection);
+		glUniform3f(origin, position.x, height, position.z);
+		glUniform2f(facing, position.forwardX, position.forwardZ);
+		glBindTexture(GL_TEXTURE_2D, textures[0]);
+		glActiveTexture(GL_TEXTURE4);
+		glBindTexture(GL_TEXTURE_2D, textures[1]);
+		glDrawArrays(GL_TRIANGLES, 0, vertices);
+		glActiveTexture(GL_TEXTURE0);
+	}
+
+	~AndroidCommanderModel()
+	{
+		if (!program)
+			return;
+		glDeleteTextures(2, textures);
+		glDeleteBuffers(1, &buffer);
+		glDeleteVertexArrays(1, &vao);
+		glDeleteProgram(program);
+	}
+};
+
 static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 {
 	constexpr size_t headerSize = 32;
@@ -744,8 +852,11 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 	const GLint transform = glGetUniformLocation(program, "modelViewProjection");
 	const GLuint marker = BuildAndroidTerrainProgram("unit marker", "",
 		"uniform vec4 position; void main() { gl_Position = position; gl_PointSize = 32.0; }",
-		"uniform vec3 tint; out vec4 color; void main() {"
-		"if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard; color = vec4(tint, 1.0); }");
+		"uniform vec3 tint; uniform bool ring; out vec4 color; void main() {"
+		"float distance = length(gl_PointCoord - vec2(0.5));"
+		"if (distance > 0.48 || (ring && distance < 0.38)) discard; color = vec4(tint, 1.0); }");
+	AndroidCommanderModel commander;
+	commander.Load();
 	using namespace AndroidMatchSmoke;
 	std::optional<Position> unit;
 	Uint32 nextPositionRead = 0;
@@ -803,13 +914,15 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 			Position position = {};
 			unit.reset();
 			if (Read("skirmish/commander.bin", position) &&
-			    std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
+			    std::isfinite(position.x) && std::isfinite(position.groundOffset) && std::isfinite(position.z) &&
+			    std::isfinite(position.forwardX) && std::isfinite(position.forwardZ) &&
 			    position.x >= 0 && position.x < width * 8 && position.z >= 0 && position.z < height * 8)
 				unit = position;
 		}
-		float unitX = 0, unitY = 0;
+		float unitX = 0, unitY = 0, unitGroundY = 0;
 		if (unit) {
-			const float y = unit->y + 32;
+			unitGroundY = groundHeight(unit->x, unit->z) + unit->groundOffset;
+			const float y = unitGroundY + 32;
 			unitX = matrix[0] * unit->x + matrix[8] * unit->z + matrix[12];
 			unitY = matrix[1] * unit->x + matrix[5] * y + matrix[9] * unit->z + matrix[13];
 		} else {
@@ -853,6 +966,7 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		}
 		glViewport(0, 0, w, h);
 		glUseProgram(program);
+		glBindVertexArray(vao);
 		glUniformMatrix4fv(transform, 1, GL_FALSE, matrix);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		for (unsigned z = 0; z < squaresZ; ++z) {
@@ -862,10 +976,14 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 				glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 3);
 			}
 		}
+		if (unit && commander.program)
+			commander.Draw(matrix, *unit, unitGroundY);
 		if (unit && marker != 0) {
 			glDisable(GL_DEPTH_TEST);
 			glUseProgram(marker);
-			glUniform4f(glGetUniformLocation(marker, "position"), unitX, unitY, 0, 1);
+			const float ringY = commander.program ? unitY - 32 * matrix[5] : unitY;
+			glUniform4f(glGetUniformLocation(marker, "position"), unitX, ringY, 0, 1);
+			glUniform1i(glGetUniformLocation(marker, "ring"), commander.program != 0);
 			glUniform3f(glGetUniformLocation(marker, "tint"), 1, selected ? 1 : 0.52f, selected ? 1 : 0.14f);
 			glDrawArrays(GL_POINTS, 0, 1);
 			glEnable(GL_DEPTH_TEST);

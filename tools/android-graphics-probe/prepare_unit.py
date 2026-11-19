@@ -1,4 +1,4 @@
-"""Prepare the Legion bot's rest-pose mesh and textures for the Android probe."""
+"""Prepare rest-pose meshes and textures for the Android probes."""
 
 import argparse
 from pathlib import Path
@@ -32,7 +32,7 @@ def triangle_indices(indices, primitive):
     raise ValueError("Invalid S3O primitive or index count")
 
 
-def load_unit(path):
+def load_unit(path, world_scale=False):
     data = path.read_bytes()
     if data[:12] != b"Spring unit\0" or struct.unpack_from("<i", data, 12)[0] != 0:
         raise ValueError("Expected an S3O version 0 model")
@@ -64,6 +64,8 @@ def load_unit(path):
     visit(root, (0, 0, 0))
     center = [(min(v[axis] for v in vertices) + max(v[axis] for v in vertices)) / 2 for axis in range(3)]
     radius = max(math.dist(v[:3], center) for v in vertices)
+    if world_scale:
+        radius = 1
     floor = min(v[1] for v in vertices)
     mesh = bytearray()
     for x, y, z, u, v, nx, ny, nz in vertices:
@@ -76,10 +78,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bar", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--commander", action="store_true", help="Prepare local Armada commander data at game scale")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 
-    mesh, textures, pieces = load_unit(args.bar / "objects3d/Units/legaabot.s3o")
+    model = "armcom" if args.commander else "legaabot"
+    mesh, textures, pieces = load_unit(args.bar / f"objects3d/Units/{model}.s3o", world_scale=args.commander)
     (args.output / "unit-mesh.bin").write_bytes(mesh)
     for source, target in zip(textures, ("unit-color.rgba", "unit-material.rgba"), strict=True):
         with Image.open(args.bar / "unittextures" / source) as image:
@@ -88,6 +92,9 @@ def main():
             image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
             (args.output / target).write_bytes(image.tobytes())
 
+    if args.commander:
+        print(f"{pieces} pieces, {len(mesh) // 96} triangles, textures: {', '.join(textures)}")
+        return
     (args.output / "unit-credits.txt").write_text(
         "Beyond All Reason Legion Flak Bot by ZephyrSkies.\n"
         "Source: https://github.com/beyond-all-reason/Beyond-All-Reason\n"

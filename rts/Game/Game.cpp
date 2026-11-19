@@ -1232,8 +1232,11 @@ bool CGame::Update()
 			}
 		}
 		using namespace AndroidMatchSmoke;
-		const Position position = commander ? Position{commander->pos.x, commander->pos.y, commander->pos.z} :
-		                                      Position{-1, 0, -1};
+		const Position position = commander ? Position{commander->pos.x,
+		                                             commander->pos.y - CGround::GetHeightReal(commander->pos.x, commander->pos.z),
+		                                             commander->pos.z,
+		                                             commander->frontdir.x, commander->frontdir.z} :
+		                                      Position{-1, 0, -1, 0, 1};
 		Write("commander.bin", "commander.tmp", position);
 		Move order = {};
 		if (Read("move.bin", order) && order.sequence > lastMove) {

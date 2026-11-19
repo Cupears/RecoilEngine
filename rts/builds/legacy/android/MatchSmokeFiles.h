@@ -7,7 +7,8 @@
 // Android app's private directory, shared only by its two processes.
 namespace AndroidMatchSmoke {
 	struct Position {
-		float x, y, z;
+		float x, groundOffset, z;
+		float forwardX, forwardZ;
 	};
 
 	struct Move {
