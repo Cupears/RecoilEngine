@@ -13,7 +13,7 @@
 #undef KeyRelease
 #else
 #include <unistd.h> // isatty
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 #include <X11/Xlib.h> // XInitThreads
 #endif
 
@@ -324,7 +324,7 @@ bool SpringApp::Init()
 
 bool SpringApp::InitPlatformLibs()
 {
-#if !(defined(_WIN32) || defined(__APPLE__) || defined(HEADLESS)) || defined(__OpenBSD__)
+#if !(defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__) || defined(HEADLESS)) || defined(__OpenBSD__)
 	// MUST run before any other X11 call (including
 	// those by SDL) to make calls to X11 threadsafe
 	if (!XInitThreads()) {

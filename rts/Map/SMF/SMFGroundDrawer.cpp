@@ -378,12 +378,9 @@ void CSMFGroundDrawer::DrawCompositePass()
 
 	compositeShader->Enable();
 
-	glBegin(GL_QUADS);
-	glVertex2f(-1.0f, -1.0f);
-	glVertex2f( 1.0f, -1.0f);
-	glVertex2f( 1.0f,  1.0f);
-	glVertex2f(-1.0f,  1.0f);
-	glEnd();
+	compositeVAO.Bind();
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	compositeVAO.Unbind();
 
 	compositeShader->Disable();
 

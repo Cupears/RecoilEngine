@@ -27,7 +27,9 @@ list(APPEND engineDedicatedLibraries headlessStubs engineSystemNet)
 if(UNIX AND NOT (CMAKE_SYSTEM_NAME MATCHES "OpenBSD"))
 	list(APPEND engineDedicatedLibraries libunwind::libunwind)
 endif()
-list(APPEND engineDedicatedLibraries ${LZMA_LIBRARY})
+if(NOT ANDROID)
+	list(APPEND engineDedicatedLibraries ${LZMA_LIBRARY})
+endif()
 
 #nowide for Windows utf-8 abstraction layer
 list(APPEND engineDedicatedLibraries "nowide::nowide")

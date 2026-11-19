@@ -87,12 +87,16 @@ static void ThreadSIGUSR1Handler(int signum, siginfo_t* info, void* pCtx)
 	LOG_L(L_DEBUG, "[%s][1]", __func__);
 
 	// Fill in ucontext_t structure before locking, this allows stack walking...
+#if defined(__ANDROID__)
+	localThreadControls->ucontext = *static_cast<const ucontext_t*>(pCtx);
+#else
 	const int err = getcontext(&(localThreadControls->ucontext));
 
 	if (err != 0) {
 		LOG_L(L_ERROR, "[%s] couldn't get thread context within suspend signal handler: %s", __func__, strerror(err));
 		return;
 	}
+#endif
 
 	// Change the "running" flag to false. Note that we don't own a lock on the suspend mutex, but in order to get here,
 	//   it had to have been locked by some other thread.

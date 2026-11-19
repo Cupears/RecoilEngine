@@ -13,6 +13,9 @@
 
 #include <cstdio> // for stderr, stdout
 
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	#include <android/log.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +42,12 @@ static void log_sink_record_console(int level, const char* section, const char* 
 {
 	char framePrefix[128] = {'\0'};
 	log_framePrefixer_createPrefix(framePrefix, sizeof(framePrefix));
+
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	const int priority = level >= LOG_LEVEL_ERROR ? ANDROID_LOG_ERROR :
+		(level >= LOG_LEVEL_WARNING ? ANDROID_LOG_WARN : ANDROID_LOG_INFO);
+	__android_log_print(priority, "Recoil", "%s%s", framePrefix, record);
+#endif
 
 	FILE* outStream = stdout;
 

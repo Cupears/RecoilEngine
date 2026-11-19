@@ -492,6 +492,9 @@ SDL_Window* CGlobalRendering::CreateSDLWindow(const char* title) const
 
 SDL_GLContext CGlobalRendering::CreateGLContext(const int2& minCtx)
 {
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	return SDL_GL_CreateContext(sdlWindow);
+#else
 	SDL_GLContext newContext = nullptr;
 
 	constexpr int2 glCtxs[] = {{2, 0}, {2, 1},  {3, 0}, {3, 1}, {3, 2}, {3, 3},  {4, 0}, {4, 1}, {4, 2}, {4, 3}, {4, 4}, {4, 5}, {4, 6}};
@@ -544,19 +547,330 @@ SDL_GLContext CGlobalRendering::CreateGLContext(const int2& minCtx)
 
 	// should never fail at this point
 	return (newContext = SDL_GL_CreateContext(sdlWindow));
+#endif
 }
+
+#if defined(__ANDROID__) && !defined(HEADLESS)
+#include "TerrainShaderSources.h"
+#include "../../tools/android-graphics-probe/camera_gestures.h"
+#include "../builds/legacy/android/MatchConnection.h"
+
+static GLuint CompileAndroidTerrainShader(GLenum stage, const char* defines, const char* source)
+{
+	const char* parts[] = {"#version 310 es\nprecision highp float;\n", defines, source};
+	const GLuint shader = glCreateShader(stage);
+	glShaderSource(shader, 3, parts, nullptr);
+	glCompileShader(shader);
+	GLint compiled = GL_FALSE;
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+	if (compiled == GL_TRUE)
+		return shader;
+
+	char message[2048] = {};
+	glGetShaderInfoLog(shader, sizeof(message), nullptr, message);
+	SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Recoil terrain shader compile failed: %s", message);
+	glDeleteShader(shader);
+	return 0;
+}
+
+static GLuint BuildAndroidTerrainProgram(const char* name, const char* defines, const char* vertex, const char* fragment)
+{
+	const GLuint vs = CompileAndroidTerrainShader(GL_VERTEX_SHADER, defines, vertex);
+	const GLuint fs = CompileAndroidTerrainShader(GL_FRAGMENT_SHADER, defines, fragment);
+	GLuint program = 0;
+	if (vs != 0 && fs != 0) {
+		program = glCreateProgram();
+		glAttachShader(program, vs);
+		glAttachShader(program, fs);
+		glLinkProgram(program);
+		GLint linked = GL_FALSE;
+		glGetProgramiv(program, GL_LINK_STATUS, &linked);
+		if (linked == GL_TRUE) {
+			SDL_Log("Recoil OpenGL ES terrain program linked: %s", name);
+		} else {
+			char message[2048] = {};
+			glGetProgramInfoLog(program, sizeof(message), nullptr, message);
+			SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Recoil terrain program %s failed to link: %s", name, message);
+			glDeleteProgram(program);
+			program = 0;
+		}
+	}
+	if (vs != 0)
+		glDeleteShader(vs);
+	if (fs != 0)
+		glDeleteShader(fs);
+	return program;
+}
+
+static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
+{
+	constexpr unsigned headerSize = 32;
+	size_t bytes = 0;
+	std::unique_ptr<void, decltype(&SDL_free)> file(SDL_LoadFile("terrain-draw.bin", &bytes), SDL_free);
+	if (!file || bytes < headerSize || std::memcmp(file.get(), "SMF2", 4) != 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Missing or invalid Android SMF terrain data");
+		return;
+	}
+	const auto* payload = static_cast<const unsigned char*>(file.get()) + 4;
+	uint32_t fields[7];
+	std::memcpy(fields, payload, sizeof(fields));
+	const auto [width, height, squareX, squareZ, squaresX, squaresZ, textureSide] = fields;
+	if (width == 0 || height == 0 || width > 4096 || height > 4096 ||
+	    (textureSide != 512 && textureSide != 1024) || squaresX == 0 || squaresZ == 0 ||
+	    squareX >= width / 128 || squareZ >= height / 128 ||
+	    squaresX > width / 128 - squareX || squaresZ > height / 128 - squareZ) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Invalid Android SMF terrain dimensions");
+		return;
+	}
+	const size_t samples = (size_t(width) + 1) * (size_t(height) + 1);
+	const size_t atlasBytes = size_t(textureSide) * textureSide * 4;
+	if (bytes != headerSize + samples * 5 + atlasBytes * squaresX * squaresZ) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Incomplete Android SMF terrain data");
+		return;
+	}
+
+	constexpr unsigned grid = 128;
+	std::vector<float> vertices;
+	vertices.reserve(grid * grid * 18);
+	for (unsigned z = 0; z < grid; ++z) {
+		for (unsigned x = 0; x < grid; ++x) {
+			const float x0 = x * 8.0f, x1 = x0 + 8, z0 = z * 8.0f, z1 = z0 + 8;
+			vertices.insert(vertices.end(), {x0, 0, z0, x0, 0, z1, x1, 0, z0,
+				x1, 0, z0, x0, 0, z1, x1, 0, z1});
+		}
+	}
+	GLuint vao = 0, buffer = 0, textures[4] = {};
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+	glGenBuffers(1, &buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, buffer);
+	glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+	const GLint position = glGetAttribLocation(program, "vertexPos");
+	glEnableVertexAttribArray(position);
+	glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+	const auto* pixels = static_cast<const unsigned char*>(file.get()) + headerSize;
+	const auto sampleHeight = [&](size_t index) {
+		float value;
+		std::memcpy(&value, pixels + index * sizeof(float), sizeof(float));
+		return value;
+	};
+	const auto groundHeight = [&](float x, float z) {
+		const float gx = std::clamp(x / 8, 0.0f, float(width));
+		const float gz = std::clamp(z / 8, 0.0f, float(height));
+		const unsigned ix = std::min(unsigned(gx), width - 1), iz = std::min(unsigned(gz), height - 1);
+		const size_t index = size_t(iz) * (width + 1) + ix;
+		const float a = sampleHeight(index), b = sampleHeight(index + 1);
+		const float c = sampleHeight(index + width + 1), d = sampleHeight(index + width + 2);
+		const float u = gx - ix, v = gz - iz;
+		return u + v <= 1 ? a + u * (b - a) + v * (c - a) :
+			d + (1 - u) * (c - d) + (1 - v) * (b - d);
+	};
+	float minHeight = sampleHeight(0), maxHeight = minHeight;
+	for (size_t i = 1; i < samples; ++i) {
+		const float value = sampleHeight(i);
+		minHeight = std::min(minHeight, value);
+		maxHeight = std::max(maxHeight, value);
+	}
+	constexpr unsigned char neutralDetail[] = {128, 128, 128, 128};
+	const void* textureData[] = {pixels + 5 * samples, pixels, neutralDetail, pixels + 4 * samples};
+	const GLint internalFormats[] = {GL_RGBA8, GL_R32F, GL_RGBA8, GL_R8};
+	const GLenum formats[] = {GL_RGBA, GL_RED, GL_RGBA, GL_RED};
+	const char* samplerNames[] = {"diffuseTex", "heightMapTex", "detailTex", "shadingTex"};
+	const unsigned widths[] = {textureSide, width + 1, 1, width + 1};
+	const unsigned heights[] = {textureSide, height + 1, 1, height + 1};
+	glUseProgram(program);
+	glGenTextures(4, textures);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	for (int i = 0; i < 4; ++i) {
+		glActiveTexture(GL_TEXTURE0 + i);
+		glBindTexture(GL_TEXTURE_2D, textures[i]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i == 1 ? GL_NEAREST : GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, i == 1 ? GL_NEAREST : GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, internalFormats[i], widths[i], heights[i], 0, formats[i],
+			i == 1 ? GL_FLOAT : GL_UNSIGNED_BYTE, textureData[i]);
+		glUniform1i(glGetUniformLocation(program, samplerNames[i]), i);
+	}
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+	glActiveTexture(GL_TEXTURE0);
+	std::vector<GLuint> atlases(squaresX * squaresZ, textures[0]);
+	if (atlases.size() > 1)
+		glGenTextures(atlases.size() - 1, atlases.data() + 1);
+	for (size_t i = 1; i < atlases.size(); ++i) {
+		glBindTexture(GL_TEXTURE_2D, atlases[i]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, textureSide, textureSide, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+			pixels + 5 * samples + i * atlasBytes);
+	}
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+	const GLint textureSquare = glGetUniformLocation(program, "texSquare");
+	glUniform2f(glGetUniformLocation(program, "specularTexGen"), 1.0f / (width * 8), 1.0f / (height * 8));
+	const unsigned centerGridX = squareX * grid + squaresX * grid / 2;
+	const unsigned centerGridZ = squareZ * grid + squaresZ * grid / 2;
+	const float centerX = centerGridX * 8.0f, centerZ = centerGridZ * 8.0f;
+	const size_t centerSample = size_t(centerGridZ) * (width + 1) + centerGridX;
+	float centerY = 0;
+	std::memcpy(&centerY, pixels + centerSample * sizeof(float), sizeof(float));
+	glUniform3f(glGetUniformLocation(program, "cameraPos"), centerX, centerY + 1000, centerZ - 1000);
+	glUniform4f(glGetUniformLocation(program, "lightDir"), -0.35f, 0.85f, -0.4f, 0);
+	glUniform2f(glGetUniformLocation(program, "fogEndAndScale"), 1, 1);
+	const GLint transform = glGetUniformLocation(program, "modelViewProjection");
+	const GLuint marker = BuildAndroidTerrainProgram("unit marker", "",
+		"uniform vec4 position; void main() { gl_Position = position; gl_PointSize = 32.0; }",
+		"uniform vec3 tint; out vec4 color; void main() {"
+		"if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard; color = vec4(tint, 1.0); }");
+	AndroidMatchConnection match;
+	bool selected = false;
+	glEnable(GL_DEPTH_TEST);
+	glClearColor(0.06f, 0.08f, 0.12f, 1);
+	bool checked = false;
+	bool running = true;
+	CameraGesture camera = {};
+	camera.zoom = 1.0f;
+	while (running) {
+		int w = 0, h = 0;
+		SDL_GL_GetDrawableSize(window, &w, &h);
+		const float touchAspect = h > 0 ? float(w) / h : 1.0f;
+		std::optional<TouchPoint> tap;
+		SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			if (event.type == SDL_QUIT || (event.type == SDL_KEYDOWN &&
+			    (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_AC_BACK)))
+				running = false;
+			if (event.type == SDL_APP_WILLENTERBACKGROUND) {
+				camera.count = 0;
+				camera.canTap = false;
+			}
+			if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERMOTION || event.type == SDL_FINGERUP) {
+				const TouchPoint point = {event.tfinger.x, event.tfinger.y};
+				if (event.type == SDL_FINGERDOWN)
+					CameraTouchDown(&camera, event.tfinger.fingerId, point);
+				else if (event.type == SDL_FINGERMOTION)
+					CameraTouchMove(&camera, event.tfinger.fingerId, point, touchAspect);
+				else if (CameraTouchUp(&camera, event.tfinger.fingerId, point, touchAspect))
+					tap = TouchPoint{2 * point.x - 1, 1 - 2 * point.y};
+			}
+		}
+		if (!running)
+			break;
+		if (w <= 0 || h <= 0) {
+			SDL_Delay(32);
+			continue;
+		}
+		const float depthScale = 1.55f / (std::max(squaresX, squaresZ) * 1024.0f);
+		const float s = depthScale * std::min(1.0f, touchAspect) * camera.zoom;
+		const float a = s / touchAspect;
+		const float matrix[] = {
+			0.92f*a, -0.26f*s, -0.28f*depthScale, 0,  0, 0.72f*s, -0.69f*depthScale, 0,
+			0.39f*a, 0.64f*s, 0.66f*depthScale, 0,
+			camera.pan.x - a*(0.92f*centerX + 0.39f*centerZ),
+			camera.pan.y + s*(0.26f*centerX - 0.72f*centerY - 0.64f*centerZ),
+			depthScale*(0.28f*centerX + 0.69f*centerY - 0.66f*centerZ), 1,
+		};
+		const auto unit = match.GetCommander();
+		float unitX = 0, unitY = 0, unitZ = 0;
+		if (unit) {
+			const float y = unit->y + 32;
+			unitX = matrix[0] * unit->x + matrix[8] * unit->z + matrix[12];
+			unitY = matrix[1] * unit->x + matrix[5] * y + matrix[9] * unit->z + matrix[13];
+			unitZ = matrix[2] * unit->x + matrix[6] * y + matrix[10] * unit->z + matrix[14];
+		} else {
+			selected = false;
+		}
+		if (tap && unit && marker != 0) {
+			if (std::hypot((tap->x - unitX) * w, (tap->y - unitY) * h) <= 76) {
+				selected = true;
+			} else if (selected) {
+				const float det = matrix[0] * matrix[9] - matrix[8] * matrix[1];
+				const auto atHeight = [&](float y) {
+					const float x = tap->x - matrix[12], z = tap->y - matrix[13] - matrix[5] * y;
+					return TouchPoint{(x * matrix[9] - z * matrix[8]) / det,
+						(z * matrix[0] - x * matrix[1]) / det};
+				};
+				// March from above the terrain and refine the first intersection.
+				float above = maxHeight + 1;
+				for (int step = 1; step <= 96; ++step) {
+					float below = maxHeight + 1 - (maxHeight - minHeight + 2) * step / 96;
+					const TouchPoint point = atHeight(below);
+					if (point.x < 0 || point.x >= width * 8 || point.y < 0 || point.y >= height * 8 ||
+					    below > groundHeight(point.x, point.y)) {
+						above = below;
+						continue;
+					}
+					for (int i = 0; i < 10; ++i) {
+						const float mid = (above + below) * 0.5f;
+						const TouchPoint sample = atHeight(mid);
+						if (mid > groundHeight(sample.x, sample.y))
+							above = mid;
+						else
+							below = mid;
+					}
+					const TouchPoint destination = atHeight(below);
+					match.Move(destination.x, destination.y);
+					break;
+				}
+			}
+		}
+		glViewport(0, 0, w, h);
+		glUseProgram(program);
+		glUniformMatrix4fv(transform, 1, GL_FALSE, matrix);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		for (unsigned z = 0; z < squaresZ; ++z) {
+			for (unsigned x = 0; x < squaresX; ++x) {
+				glUniform2i(textureSquare, squareX + x, squareZ + z);
+				glBindTexture(GL_TEXTURE_2D, atlases[z * squaresX + x]);
+				glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 3);
+			}
+		}
+		if (unit && marker != 0) {
+			glUseProgram(marker);
+			glUniform4f(glGetUniformLocation(marker, "position"), unitX, unitY, unitZ, 1);
+			glUniform3f(glGetUniformLocation(marker, "tint"), 1, selected ? 1 : 0.52f, selected ? 1 : 0.14f);
+			glDrawArrays(GL_POINTS, 0, 1);
+		}
+		if (!checked) {
+			unsigned char rgba[4] = {};
+			glReadPixels(w / 2, h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+			const GLenum error = glGetError();
+			SDL_Log("Recoil SMF terrain drew %u x %u squares: center RGB %u,%u,%u, GL error 0x%x",
+				squaresX, squaresZ, unsigned(rgba[0]), unsigned(rgba[1]), unsigned(rgba[2]), error);
+			checked = true;
+		}
+		SDL_GL_SwapWindow(window);
+		SDL_Delay(32);
+	}
+	glDeleteTextures(4, textures);
+	if (atlases.size() > 1)
+		glDeleteTextures(atlases.size() - 1, atlases.data() + 1);
+	glDeleteBuffers(1, &buffer);
+	glDeleteVertexArrays(1, &vao);
+	if (marker != 0)
+		glDeleteProgram(marker);
+}
+#endif
 
 bool CGlobalRendering::CreateWindowAndContext(const char* title)
 {
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 	if (SDL_Init(SDL_INIT_VIDEO) == -1) {
 		LOG_L(L_FATAL, "[GR::%s] error \"%s\" initializing SDL", __func__, SDL_GetError());
 		return false;
 	}
 
+#if !defined(__ANDROID__) || defined(HEADLESS)
 	if (!CheckAvailableVideoModes()) {
 		handleerror(nullptr, "desktop color-depth should be at least 24 bits per pixel, aborting", "ERROR", MBF_OK | MBF_EXCL);
 		return false;
 	}
+#endif
 
 	// should be set to "3.0" (non-core Mesa is stuck there), see below
 	const char* mesaGL = getenv("MESA_GL_VERSION_OVERRIDE");
@@ -582,11 +896,17 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 	//   3.0/1.30 for Mesa, other drivers return their *maximum* supported context
 	//   in compat and do not make 3.0 itself available in core (though this still
 	//   suffices for most of Spring)
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+#else
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, forceCoreContext? SDL_GL_CONTEXT_PROFILE_CORE: SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, minCtx.x);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minCtx.y);
+#endif
 
 
 	if (msaaLevel > 0) {
@@ -634,8 +954,30 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 		WindowManagerHelper::BlockCompositing(sdlWindow);
 #endif
 
-	if ((glContext = CreateGLContext(minCtx)) == nullptr)
+	if ((glContext = CreateGLContext(minCtx)) == nullptr) {
+#if defined(__ANDROID__) && !defined(HEADLESS)
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Recoil could not create the Android graphics context: %s", SDL_GetError());
+#endif
 		return false;
+	}
+
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	const auto getString = reinterpret_cast<PFNGLGETSTRINGPROC>(SDL_GL_GetProcAddress("glGetString"));
+	const auto version = getString ? getString(GL_VERSION) : nullptr;
+	SDL_Log("Recoil opened its Android window and graphics context: %s", version ? reinterpret_cast<const char*>(version) : "unknown GL version");
+	if (gladLoadGLLoader(SDL_GL_GetProcAddress)) {
+		using namespace AndroidTerrainShaderSources;
+		const GLuint program = BuildAndroidTerrainProgram("forward", "#define NOSPRING\n", ForwardVertex, ForwardFragment);
+		if (program != 0) {
+			DrawAndroidTerrainSquare(sdlWindow, program);
+			glDeleteProgram(program);
+		}
+	} else {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Recoil could not load the Android graphics entry points");
+	}
+	SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Recoil's desktop renderer needs an Android-compatible graphics backend");
+	return false;
+#endif
 
 	gladLoadGL();
 	// Some drivers (Intel, Parallels) report GL_EXT_framebuffer_blit but do not export glBlitFramebufferEXT.

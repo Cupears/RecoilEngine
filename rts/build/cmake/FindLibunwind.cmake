@@ -39,6 +39,16 @@ if (APPLE AND LIBUNWIND_INCLUDE_DIR)
   # FIXME: OS X 10.10 doesn't have static libunwind.a only dynamic libunwind.dylib;
   #        link with "-framework Cocoa"
   set(LIBUNWIND_LIBRARY "-framework Cocoa")
+elseif (ANDROID AND NOT LIBUNWIND_LIBRARY)
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" "--target=${CMAKE_CXX_COMPILER_TARGET}" --print-file-name=libunwind.a
+    RESULT_VARIABLE unwind_lookup_result
+    OUTPUT_VARIABLE unwind_archive
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if (unwind_lookup_result EQUAL 0 AND IS_ABSOLUTE "${unwind_archive}" AND EXISTS "${unwind_archive}")
+    set(LIBUNWIND_LIBRARY "${unwind_archive}")
+  endif()
 else ()
   find_library(LIBUNWIND_LIBRARY NAMES unwind ${LIB_STD_ARGS})
 endif ()

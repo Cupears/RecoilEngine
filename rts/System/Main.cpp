@@ -21,6 +21,11 @@
 #include <cstdlib>
 #include <cstdint>
 
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	#include <SDL.h>
+	#include <unistd.h>
+#endif
+
 #ifdef _WIN32
 	#include "lib/SOP/SOP.hpp" // NvOptimus
 #endif
@@ -80,8 +85,20 @@ static bool SetNvOptimusProfile(const std::string& processFileName)
  *
  * Main entry point function
  */
+#if defined(__ANDROID__) && !defined(HEADLESS)
+extern "C" DECLSPEC int SDLCALL SDL_main(int argc, char* argv[])
+#else
 int main(int argc, char* argv[])
+#endif
 {
+#if defined(__ANDROID__) && !defined(HEADLESS)
+	const char* dataDir = SDL_AndroidGetInternalStoragePath();
+	if (dataDir == nullptr || chdir(dataDir) != 0 || SDL_setenv("SPRING_WRITEDIR", dataDir, 1) != 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Recoil could not open its Android data directory");
+		return EXIT_FAILURE;
+	}
+#endif
+
 	nowide::args a(argc, argv); // Fix arguments - make them UTF-8
 
 // PROFILE builds exit on execv, HEADLESS does not use the GPU

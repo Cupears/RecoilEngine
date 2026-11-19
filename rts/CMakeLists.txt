@@ -108,10 +108,14 @@ endif (USE_MIMALLOC)
 
 if(UNIX AND NOT (CMAKE_SYSTEM_NAME MATCHES "OpenBSD"))
 	find_package_static(Libunwind 1.4.0 REQUIRED)
-	prefer_static_libs()
-	find_library(LZMA_LIBRARY lzma)
-	unprefer_static_libs()
-	list(APPEND engineCommonLibraries libunwind::libunwind ${LZMA_LIBRARY})
+	list(APPEND engineCommonLibraries libunwind::libunwind)
+	# The Android NDK's libunwind does not use liblzma.
+	if(NOT ANDROID)
+		prefer_static_libs()
+		find_library(LZMA_LIBRARY lzma)
+		unprefer_static_libs()
+		list(APPEND engineCommonLibraries ${LZMA_LIBRARY})
+	endif()
 endif()
 
 

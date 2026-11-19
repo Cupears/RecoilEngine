@@ -7,6 +7,11 @@ uniform vec3 cameraPos;
 uniform vec4 lightDir;       // mapInfo->light.sunDir
 uniform vec2 specularTexGen; // 1.0/mapSize
 uniform sampler2D heightMapTex;
+#ifdef GL_ES
+uniform mat4 modelView;
+uniform mat4 modelViewProjection;
+uniform vec2 fogEndAndScale;
+#endif
 
 out vec3 halfDir;
 out float fogFactor;
@@ -17,8 +22,8 @@ const float SMF_TEXSQR_SIZE = 1024.0;
 const float SMF_DETAILTEX_RES = 0.02;
 
 // specularTexGen is inverseMapSize
-vec2 mapSize = vec2(1.0) / specularTexGen;
 float HeightAtWorldPos(vec2 wxz){
+	vec2 mapSize = vec2(1.0) / specularTexGen;
 	// Some texel magic to make the heightmap tex perfectly align:
 	const vec2 HM_TEXEL = vec2(8.0, 8.0);
 	wxz +=  -HM_TEXEL * (wxz * specularTexGen) + 0.5 * HM_TEXEL;
@@ -31,7 +36,11 @@ float HeightAtWorldPos(vec2 wxz){
 
 void main() {
 	// calc some lighting variables
+#ifdef GL_ES
+	vec3 viewDir = cameraPos;
+#else
 	vec3 viewDir = vec3(gl_ModelViewMatrixInverse * vec4(0.0, 0.0, 0.0, 1.0));
+#endif
 
 	vertexWorldPos = vec4(vertexPos, 1.0);
 	vertexWorldPos.xz += vec2(texSquare) * SMF_TEXSQR_SIZE;
@@ -44,13 +53,22 @@ void main() {
 	diffuseTexCoords = (vertexWorldPos.xz / SMF_TEXSQR_SIZE) - vec2(texSquare);
 
 	// transform vertex pos
+#ifdef GL_ES
+	gl_Position = modelViewProjection * vertexWorldPos;
+#else
 	gl_Position = gl_ModelViewProjectionMatrix * vertexWorldPos;
 	gl_ClipVertex = gl_ModelViewMatrix * vertexWorldPos;
+#endif
 
 #ifndef DEFERRED_MODE
 	// emulate linear fog
+#ifdef GL_ES
+	float fogCoord = length((modelView * vertexWorldPos).xyz);
+	fogFactor = (fogEndAndScale.x - fogCoord) * fogEndAndScale.y;
+#else
 	float fogCoord = length(gl_ClipVertex.xyz);
 	fogFactor = (gl_Fog.end - fogCoord) * gl_Fog.scale; // gl_Fog.scale == 1.0 / (gl_Fog.end - gl_Fog.start)
+#endif
 	fogFactor = clamp(fogFactor, 0.0, 1.0);
 #endif
 }

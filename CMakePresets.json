@@ -1,0 +1,74 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "android-arm64-probe",
+      "displayName": "Android ARM64 configure probe",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/android-build/recoil-arm64-probe",
+      "toolchainFile": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+      "environment": {
+        "PKG_CONFIG_LIBDIR": "$env{RECOIL_ANDROID_DEPS}/lib/pkgconfig",
+        "PKG_CONFIG_PATH": ""
+      },
+      "cacheVariables": {
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-28",
+        "BUILD_TESTING": "OFF",
+        "NO_SOUND": "ON",
+        "CMAKE_FIND_ROOT_PATH": "$env{RECOIL_ANDROID_DEPS}",
+        "CMAKE_PREFIX_PATH": "$env{RECOIL_ANDROID_DEPS}"
+      }
+    },
+    {
+      "name": "android-arm64-dedicated",
+      "displayName": "Android ARM64 dedicated engine",
+      "inherits": "android-arm64-probe",
+      "binaryDir": "${sourceParentDir}/android-build/recoil-arm64-dedicated-api33",
+      "cacheVariables": {
+        "ANDROID_PLATFORM": "android-33",
+        "BUILD_spring-legacy": "OFF",
+        "BUILD_spring-headless": "OFF"
+      }
+    },
+    {
+      "name": "android-arm64-headless",
+      "displayName": "Android ARM64 headless client",
+      "inherits": "android-arm64-dedicated",
+      "binaryDir": "${sourceParentDir}/android-build/recoil-arm64-headless",
+      "cacheVariables": {
+        "BUILD_spring-dedicated": "OFF",
+        "BUILD_spring-headless": "ON"
+      }
+    },
+    {
+      "name": "android-arm64-client",
+      "displayName": "Android ARM64 graphical client",
+      "inherits": "android-arm64-dedicated",
+      "binaryDir": "${sourceParentDir}/android-build/recoil-arm64-client",
+      "cacheVariables": {
+        "BUILD_spring-dedicated": "OFF",
+        "BUILD_spring-legacy": "ON",
+        "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
+        "MI_LOCAL_DYNAMIC_TLS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "android-arm64-dedicated",
+      "configurePreset": "android-arm64-dedicated",
+      "targets": ["engine-dedicated"]
+    },
+    {
+      "name": "android-arm64-headless",
+      "configurePreset": "android-arm64-headless",
+      "targets": ["engine-headless"]
+    },
+    {
+      "name": "android-arm64-client",
+      "configurePreset": "android-arm64-client",
+      "targets": ["engine-legacy"]
+    }
+  ]
+}

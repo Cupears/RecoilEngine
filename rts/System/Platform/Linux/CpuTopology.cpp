@@ -94,10 +94,16 @@ void set_cpu_affinity(uint32_t cpu) {
 	CPU_ZERO(&mask);
 	CPU_SET(cpu, &mask);
 
+#if defined(__ANDROID__)
+	if (sched_setaffinity(0, sizeof(mask), &mask) != 0) {
+		perror("sched_setaffinity");
+	}
+#else
 	pthread_t thread = pthread_self();
 	if (pthread_setaffinity_np(thread, sizeof(mask), &mask) != 0) {
 		perror("pthread_setaffinity_np");
 	}
+#endif
 }
 
 // Get thread siblings for a CPU

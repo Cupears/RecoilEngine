@@ -100,9 +100,9 @@ static spring::unordered_map<SizedFontKey, TimestampedFont> pinnedRecentFonts;
 class FtLibraryHandler {
 public:
 	FtLibraryHandler()
-		: config(nullptr)
-		, lib(nullptr)
+		: lib(nullptr)
 		#ifdef USE_FONTCONFIG
+		, config(nullptr)
 		, gameFontSet(nullptr)
 		, basePattern(nullptr)
 		#endif // USE_FONTCONFIG
@@ -261,16 +261,16 @@ public:
 		return true;
 	}
 
+	static bool InitSingletonFontconfig(bool console) { return singleton->InitFontconfig(console); }
+
+	#ifdef USE_FONTCONFIG
 	void InitFailed() {
 		FcConfigDestroy(config);
 		//FcFini();
 		config = nullptr;
 	}
-	static bool InitSingletonFontconfig(bool console) { return singleton->InitFontconfig(console); }
-
 	static bool UseFontConfig() { return (configHandler == nullptr || configHandler->GetBool("UseFontConfigLib")); }
 
-	#ifdef USE_FONTCONFIG
 	// command-line CheckGenFontConfigFull invocation checks
 	static bool CheckFontConfig() { return (UseFontConfig() && FcConfigUptoDate(GetFCConfig())); }
 	#else
@@ -285,6 +285,7 @@ public:
 
 		return singleton->lib;
 	};
+	#ifdef USE_FONTCONFIG
 	static FcConfig* GetFCConfig() {
 		if (singleton == nullptr)
 			singleton = std::make_unique<FtLibraryHandler>();
@@ -294,7 +295,6 @@ public:
 	static inline bool CanUseFontConfig() {
 		return GetFCConfig() != nullptr;
 	}
-	#ifdef USE_FONTCONFIG
 	static FcFontSet *GetGameFontSet() {
 		return singleton->gameFontSet;
 	}
@@ -320,9 +320,9 @@ public:
 	}
 	#endif
 private:
-	FcConfig* config;
 	FT_Library lib;
 	#ifdef USE_FONTCONFIG
+	FcConfig* config;
 	FcFontSet *gameFontSet;
 	FcPattern *basePattern;
 	#endif

@@ -3,7 +3,7 @@
 #include "System/Platform/WindowManagerHelper.h"
 #include <SDL_syswm.h>
 
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__ANDROID__)
 	#include <X11/Xlib.h>
 	#undef KeyPress
 	#undef KeyRelease
@@ -14,7 +14,7 @@ namespace WindowManagerHelper {
 
 void BlockCompositing(SDL_Window* window)
 {
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__ANDROID__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info))
@@ -36,7 +36,7 @@ void BlockCompositing(SDL_Window* window)
 int GetWindowState(SDL_Window* window)
 {
 	int flags = 0;
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__ANDROID__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info))
@@ -94,6 +94,8 @@ int GetWindowState(SDL_Window* window)
 
 	flags |= (maximized == 3) ? SDL_WINDOW_MAXIMIZED : 0;
 	flags |= (minimized) ? SDL_WINDOW_MINIMIZED : 0;
+#elif defined(__ANDROID__) && !defined(HEADLESS)
+	flags = SDL_GetWindowFlags(window);
 #endif
 	return flags;
 }
@@ -105,7 +107,7 @@ void SetWindowResizable(SDL_Window* window, bool resizable)
 
 void LowerWindow(SDL_Window* window)
 {
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__ANDROID__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_X11)
@@ -135,7 +137,7 @@ void LowerWindow(SDL_Window* window)
 
 void SetNoInitialFocus(SDL_Window* window)
 {
-#ifndef HEADLESS
+#if !defined(HEADLESS) && !defined(__ANDROID__)
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);
 	if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_X11)

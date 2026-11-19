@@ -1855,6 +1855,11 @@ void CGame::SimFrame() {
 		eventHandler.GameFramePost(gs->frameNum);
 	}
 
+#if defined(HEADLESS) && defined(__ANDROID__)
+	if (gs->frameNum == 300)
+		LOG("[Android headless] Finished simulation frame %d", gs->frameNum);
+#endif
+
 	lastSimFrameTime = spring_gettime();
 	gu->avgSimFrameTime = mix(gu->avgSimFrameTime, (lastSimFrameTime - lastFrameTime).toMilliSecsf(), 0.05f);
 	gu->avgSimFrameTime = std::max(gu->avgSimFrameTime, 0.01f);

@@ -3,6 +3,6 @@
 out vec2 texCoords;
 
 void main() {
-	texCoords = gl_Vertex.xy * 0.5 + 0.5;
-	gl_Position = vec4(gl_Vertex.xy, 0.0, 1.0);
+	texCoords = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+	gl_Position = vec4(texCoords * 2.0 - 1.0, 0.0, 1.0);
 }

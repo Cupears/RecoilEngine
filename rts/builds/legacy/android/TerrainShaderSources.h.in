@@ -1,0 +1,8 @@
+#pragma once
+
+namespace AndroidTerrainShaderSources {
+inline constexpr const char* ForwardVertex = R"glsl(@SMFVertProg@)glsl";
+inline constexpr const char* ForwardFragment = R"glsl(@SMFFragProg@)glsl";
+inline constexpr const char* CompositeVertex = R"glsl(@SMFCompositeVertProg@)glsl";
+inline constexpr const char* CompositeFragment = R"glsl(@SMFCompositeFragProg@)glsl";
+}

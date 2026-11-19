@@ -17,7 +17,7 @@
 	#ifndef SHGFP_TYPE_CURRENT
 		#define SHGFP_TYPE_CURRENT 0
 	#endif
-#else
+#elif !defined(__ANDROID__)
 	#include <wordexp.h>
 #endif
 
@@ -140,6 +140,9 @@ std::string DataDirLocater::SubstEnvVars(const std::string& in) const
 		return "";
 
 	out = nowide::narrow(out_ws.c_str());
+#elif defined(__ANDROID__)
+	// Android callers supply literal paths, such as the app's private data directory.
+	out = in;
 #else
 	std::string previous = in;
 
@@ -314,7 +317,7 @@ void DataDirLocater::AddHomeDirs()
 	AddDirs(dd_myDocs);         // "C:/.../My Documents/Spring/"
 	AddDirs(dd_appData);        // "C:/.../All Users/Applications/Spring/"
 
-#else
+#elif !defined(__ANDROID__)
 	// Linux, FreeBSD, Solaris, Apple non-bundle
 	AddDirs("${XDG_CONFIG_HOME-\"~/.config\"}/spring");
 	AddDirs("~/.spring");

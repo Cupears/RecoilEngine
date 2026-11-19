@@ -164,8 +164,12 @@ static int traversetable (global_State *g, Table *h) {
     markobject(g, h->metatable);
   mode = gfasttm(g, h->metatable, TM_MODE);
   if (mode && ttisstring(mode)) {  /* is there a weak mode? */
-    weakkey = (strchr(svalue(mode), 'k') != NULL);
-    weakvalue = (strchr(svalue(mode), 'v') != NULL);
+    /* Lua string bytes follow the allocation header, outside the C++ object. */
+    const char *flags = svalue(mode);
+    for (size_t flag = 0; flag < tsvalue(mode)->len && flags[flag] != '\0'; ++flag) {
+      weakkey |= (flags[flag] == 'k');
+      weakvalue |= (flags[flag] == 'v');
+    }
     if (weakkey || weakvalue) {  /* is really weak? */
       h->marked &= ~(KEYWEAK | VALUEWEAK);  /* clear bits */
       h->marked |= cast_byte((weakkey << KEYWEAKBIT) |

@@ -102,6 +102,7 @@ protected:
 	std::array<ISMFRenderState*, RENDER_STATE_CNT> smfRenderStates;
 
 	GL::GeometryBuffer geomBuffer;
+	VAO compositeVAO;
 
 	Shader::IProgramObject* borderShader = nullptr;
 	Shader::IProgramObject* shadowShader = nullptr;

@@ -11,9 +11,10 @@ add_definitions(-DHEADLESS)
 add_definitions(-DNO_SOUND)
 remove_definitions(-DAVI_CAPTURING)
 
-set(OpenGL_GL_PREFERENCE LEGACY)
-
-find_package(OpenGL 3.0 REQUIRED)
+if(NOT ANDROID)
+	set(OpenGL_GL_PREFERENCE LEGACY)
+	find_package(OpenGL 3.0 REQUIRED)
+endif()
 
 # headlessstubs are our stubs that replace libGL, libGLU, libGLEW, libSDL (yes really!)
 list(APPEND engineHeadlessLibraries headlessStubs)

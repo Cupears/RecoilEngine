@@ -10,7 +10,7 @@
 	#include <windows.h>
 	#include "System/Input/MouseInput.h"
 	typedef unsigned char byte;
-#elif !defined(__APPLE__)
+#elif !defined(__APPLE__) && !defined(__ANDROID__)
 	#include <X11/Xcursor/Xcursor.h>
 	#include <SDL_syswm.h>
 #endif
@@ -145,7 +145,7 @@ private:
 #elif !defined(HEADLESS)
 
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 // X11/Wayland
 class HardwareCursorX11: public IHardwareCursor {
 public:
@@ -208,7 +208,7 @@ private:
 #endif
 
 IHardwareCursor* IHardwareCursor::Alloc(void* mem) {
-#if defined(HEADLESS)
+#if defined(HEADLESS) || defined(__ANDROID__)
 	static_assert(sizeof(HardwareCursorNull) <= CMouseCursor::HWC_MEM_SIZE, "");
 	return (new (mem) HardwareCursorNull());
 #elif defined (_WIN32)
@@ -580,7 +580,7 @@ void HardwareCursorWindows::Bind()
 #else
 
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__ANDROID__)
 void HardwareCursorX11::Init(CMouseCursor::HotSpot hs)
 {
 	RECOIL_DETAILED_TRACY_ZONE;

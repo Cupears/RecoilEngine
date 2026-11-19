@@ -1,0 +1,28 @@
+[GAME]
+{
+	MapName=Altair_Crossing_V4;
+	GameType=bar-android-local.sd7;
+	HostIP=127.0.0.1;
+	HostPort=8452;
+	IsHost=1;
+	MyPlayerName=Probe;
+	StartPosType=0;
+	RecordDemo=0;
+	FixedRNGSeed=1;
+	[PLAYER0]
+	{
+		Name=Probe;
+		Team=0;
+		Spectator=0;
+	}
+	[TEAM0]
+	{
+		TeamLeader=0;
+		AllyTeam=0;
+		Side=Armada;
+	}
+	[ALLYTEAM0]
+	{
+		NumAllies=0;
+	}
+}
