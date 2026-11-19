@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory)][string]$Jdk,
     [string]$UnitAssets,
     [string]$TerrainAsset,
+    [string[]]$ExtraJavaSources = @(),
     [switch]$Debuggable,
     [string]$Manifest = "$PSScriptRoot/AndroidManifest.xml",
     [string[]]$ExtraLibraries = @(),
@@ -35,6 +36,7 @@ $classes = (New-Item -ItemType Directory -Path "$work/classes").FullName
 $javaSources = @(Get-ChildItem -LiteralPath "$sdlRoot/android-project/app/src/main/java/org/libsdl/app" -Filter '*.java' |
     ForEach-Object FullName)
 
+$javaSources += @($ExtraJavaSources | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
 Invoke-BuildTool "$javaBin/javac.exe" (@('--release', '8', '-classpath', $sdkJar, '-d', $classes) + $javaSources)
 Invoke-BuildTool "$javaBin/jar.exe" @('--create', '--file', "$work/sdl-java.jar", '-C', $classes, '.')
 Invoke-BuildTool "$sdkTools/d8.bat" @('--lib', $sdkJar, '--min-api', '28', '--output', $work, "$work/sdl-java.jar")
