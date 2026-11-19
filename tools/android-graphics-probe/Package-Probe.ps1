@@ -7,6 +7,8 @@ param(
     [Parameter(Mandatory)][string]$OutputDirectory,
     [Parameter(Mandatory)][string]$Jdk,
     [string]$UnitAssets,
+    [string]$TerrainAsset,
+    [switch]$Debuggable,
     [string]$Manifest = "$PSScriptRoot/AndroidManifest.xml",
     [string[]]$ExtraLibraries = @(),
     [string]$ApkName = 'recoil-graphics-probe.apk'
@@ -36,7 +38,11 @@ $javaSources = @(Get-ChildItem -LiteralPath "$sdlRoot/android-project/app/src/ma
 Invoke-BuildTool "$javaBin/javac.exe" (@('--release', '8', '-classpath', $sdkJar, '-d', $classes) + $javaSources)
 Invoke-BuildTool "$javaBin/jar.exe" @('--create', '--file', "$work/sdl-java.jar", '-C', $classes, '.')
 Invoke-BuildTool "$sdkTools/d8.bat" @('--lib', $sdkJar, '--min-api', '28', '--output', $work, "$work/sdl-java.jar")
-Invoke-BuildTool "$sdkTools/aapt2.exe" @('link', '-I', $sdkJar, '--manifest', $Manifest, '-o', "$work/unsigned.apk")
+$linkArgs = @('link', '-I', $sdkJar, '--manifest', $Manifest, '-o', "$work/unsigned.apk")
+if ($Debuggable) {
+    $linkArgs += '--debug-mode'
+}
+Invoke-BuildTool "$sdkTools/aapt2.exe" $linkArgs
 
 $archive = [IO.Compression.ZipFile]::Open("$work/unsigned.apk", [IO.Compression.ZipArchiveMode]::Update)
 try {
@@ -47,6 +53,10 @@ try {
         $libraryPath = (Resolve-Path -LiteralPath $library).Path
         $entry = 'lib/arm64-v8a/' + [IO.Path]::GetFileName($libraryPath)
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $libraryPath, $entry) | Out-Null
+    }
+    if ($TerrainAsset) {
+        $terrainPath = (Resolve-Path -LiteralPath $TerrainAsset).Path
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $terrainPath, 'assets/terrain-draw.bin') | Out-Null
     }
     if ($UnitAssets) {
         foreach ($asset in 'unit-mesh.bin', 'unit-color.rgba', 'unit-material.rgba', 'unit-credits.txt',

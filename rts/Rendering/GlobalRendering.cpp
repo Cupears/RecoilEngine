@@ -553,7 +553,6 @@ SDL_GLContext CGlobalRendering::CreateGLContext(const int2& minCtx)
 #if defined(__ANDROID__) && !defined(HEADLESS)
 #include "TerrainShaderSources.h"
 #include "../../tools/android-graphics-probe/camera_gestures.h"
-#include "../builds/legacy/android/MatchConnection.h"
 
 static GLuint CompileAndroidTerrainShader(GLenum stage, const char* defines, const char* source)
 {
@@ -604,14 +603,18 @@ static GLuint BuildAndroidTerrainProgram(const char* name, const char* defines, 
 
 static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 {
-	constexpr unsigned headerSize = 32;
-	size_t bytes = 0;
-	std::unique_ptr<void, decltype(&SDL_free)> file(SDL_LoadFile("terrain-draw.bin", &bytes), SDL_free);
-	if (!file || bytes < headerSize || std::memcmp(file.get(), "SMF2", 4) != 0) {
+	constexpr size_t headerSize = 32;
+	constexpr size_t maxAtlasBytes = 64 * 1024 * 1024;
+	constexpr size_t maxFileBytes = headerSize + size_t(4097) * 4097 * 5 + maxAtlasBytes;
+	std::unique_ptr<SDL_RWops, decltype(&SDL_RWclose)> file(SDL_RWFromFile("terrain-draw.bin", "rb"), SDL_RWclose);
+	const Sint64 fileSize = file ? SDL_RWsize(file.get()) : -1;
+	unsigned char header[headerSize];
+	if (fileSize < Sint64(headerSize) || fileSize > Sint64(maxFileBytes) ||
+	    SDL_RWread(file.get(), header, 1, headerSize) != headerSize || std::memcmp(header, "SMF2", 4) != 0) {
 		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Missing or invalid Android SMF terrain data");
 		return;
 	}
-	const auto* payload = static_cast<const unsigned char*>(file.get()) + 4;
+	const auto* payload = header + 4;
 	uint32_t fields[7];
 	std::memcpy(fields, payload, sizeof(fields));
 	const auto [width, height, squareX, squareZ, squaresX, squaresZ, textureSide] = fields;
@@ -624,10 +627,22 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 	}
 	const size_t samples = (size_t(width) + 1) * (size_t(height) + 1);
 	const size_t atlasBytes = size_t(textureSide) * textureSide * 4;
-	if (bytes != headerSize + samples * 5 + atlasBytes * squaresX * squaresZ) {
-		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Incomplete Android SMF terrain data");
+	const size_t atlasCount = size_t(squaresX) * squaresZ;
+	if (atlasCount > maxAtlasBytes / atlasBytes) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Android SMF terrain exceeds the texture budget");
 		return;
 	}
+	const size_t dataSize = samples * 5 + atlasCount * atlasBytes;
+	if (fileSize != Sint64(headerSize + dataSize)) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Invalid Android SMF terrain file size");
+		return;
+	}
+	std::unique_ptr<void, decltype(&SDL_free)> data(SDL_malloc(dataSize), SDL_free);
+	if (!data || SDL_RWread(file.get(), data.get(), 1, dataSize) != dataSize) {
+		SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "Could not read Android SMF terrain payload");
+		return;
+	}
+	file.reset();
 
 	constexpr unsigned grid = 128;
 	std::vector<float> vertices;
@@ -649,29 +664,7 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 	glEnableVertexAttribArray(position);
 	glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-	const auto* pixels = static_cast<const unsigned char*>(file.get()) + headerSize;
-	const auto sampleHeight = [&](size_t index) {
-		float value;
-		std::memcpy(&value, pixels + index * sizeof(float), sizeof(float));
-		return value;
-	};
-	const auto groundHeight = [&](float x, float z) {
-		const float gx = std::clamp(x / 8, 0.0f, float(width));
-		const float gz = std::clamp(z / 8, 0.0f, float(height));
-		const unsigned ix = std::min(unsigned(gx), width - 1), iz = std::min(unsigned(gz), height - 1);
-		const size_t index = size_t(iz) * (width + 1) + ix;
-		const float a = sampleHeight(index), b = sampleHeight(index + 1);
-		const float c = sampleHeight(index + width + 1), d = sampleHeight(index + width + 2);
-		const float u = gx - ix, v = gz - iz;
-		return u + v <= 1 ? a + u * (b - a) + v * (c - a) :
-			d + (1 - u) * (c - d) + (1 - v) * (b - d);
-	};
-	float minHeight = sampleHeight(0), maxHeight = minHeight;
-	for (size_t i = 1; i < samples; ++i) {
-		const float value = sampleHeight(i);
-		minHeight = std::min(minHeight, value);
-		maxHeight = std::max(maxHeight, value);
-	}
+	const auto* pixels = static_cast<const unsigned char*>(data.get());
 	constexpr unsigned char neutralDetail[] = {128, 128, 128, 128};
 	const void* textureData[] = {pixels + 5 * samples, pixels, neutralDetail, pixels + 4 * samples};
 	const GLint internalFormats[] = {GL_RGBA8, GL_R32F, GL_RGBA8, GL_R8};
@@ -721,12 +714,6 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 	glUniform4f(glGetUniformLocation(program, "lightDir"), -0.35f, 0.85f, -0.4f, 0);
 	glUniform2f(glGetUniformLocation(program, "fogEndAndScale"), 1, 1);
 	const GLint transform = glGetUniformLocation(program, "modelViewProjection");
-	const GLuint marker = BuildAndroidTerrainProgram("unit marker", "",
-		"uniform vec4 position; void main() { gl_Position = position; gl_PointSize = 32.0; }",
-		"uniform vec3 tint; out vec4 color; void main() {"
-		"if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard; color = vec4(tint, 1.0); }");
-	AndroidMatchConnection match;
-	bool selected = false;
 	glEnable(GL_DEPTH_TEST);
 	glClearColor(0.06f, 0.08f, 0.12f, 1);
 	bool checked = false;
@@ -737,7 +724,6 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		int w = 0, h = 0;
 		SDL_GL_GetDrawableSize(window, &w, &h);
 		const float touchAspect = h > 0 ? float(w) / h : 1.0f;
-		std::optional<TouchPoint> tap;
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			if (event.type == SDL_QUIT || (event.type == SDL_KEYDOWN &&
@@ -753,8 +739,8 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 					CameraTouchDown(&camera, event.tfinger.fingerId, point);
 				else if (event.type == SDL_FINGERMOTION)
 					CameraTouchMove(&camera, event.tfinger.fingerId, point, touchAspect);
-				else if (CameraTouchUp(&camera, event.tfinger.fingerId, point, touchAspect))
-					tap = TouchPoint{2 * point.x - 1, 1 - 2 * point.y};
+				else
+					CameraTouchUp(&camera, event.tfinger.fingerId, point, touchAspect);
 			}
 		}
 		if (!running)
@@ -773,50 +759,6 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 			camera.pan.y + s*(0.26f*centerX - 0.72f*centerY - 0.64f*centerZ),
 			depthScale*(0.28f*centerX + 0.69f*centerY - 0.66f*centerZ), 1,
 		};
-		const auto unit = match.GetCommander();
-		float unitX = 0, unitY = 0, unitZ = 0;
-		if (unit) {
-			const float y = unit->y + 32;
-			unitX = matrix[0] * unit->x + matrix[8] * unit->z + matrix[12];
-			unitY = matrix[1] * unit->x + matrix[5] * y + matrix[9] * unit->z + matrix[13];
-			unitZ = matrix[2] * unit->x + matrix[6] * y + matrix[10] * unit->z + matrix[14];
-		} else {
-			selected = false;
-		}
-		if (tap && unit && marker != 0) {
-			if (std::hypot((tap->x - unitX) * w, (tap->y - unitY) * h) <= 76) {
-				selected = true;
-			} else if (selected) {
-				const float det = matrix[0] * matrix[9] - matrix[8] * matrix[1];
-				const auto atHeight = [&](float y) {
-					const float x = tap->x - matrix[12], z = tap->y - matrix[13] - matrix[5] * y;
-					return TouchPoint{(x * matrix[9] - z * matrix[8]) / det,
-						(z * matrix[0] - x * matrix[1]) / det};
-				};
-				// March from above the terrain and refine the first intersection.
-				float above = maxHeight + 1;
-				for (int step = 1; step <= 96; ++step) {
-					float below = maxHeight + 1 - (maxHeight - minHeight + 2) * step / 96;
-					const TouchPoint point = atHeight(below);
-					if (point.x < 0 || point.x >= width * 8 || point.y < 0 || point.y >= height * 8 ||
-					    below > groundHeight(point.x, point.y)) {
-						above = below;
-						continue;
-					}
-					for (int i = 0; i < 10; ++i) {
-						const float mid = (above + below) * 0.5f;
-						const TouchPoint sample = atHeight(mid);
-						if (mid > groundHeight(sample.x, sample.y))
-							above = mid;
-						else
-							below = mid;
-					}
-					const TouchPoint destination = atHeight(below);
-					match.Move(destination.x, destination.y);
-					break;
-				}
-			}
-		}
 		glViewport(0, 0, w, h);
 		glUseProgram(program);
 		glUniformMatrix4fv(transform, 1, GL_FALSE, matrix);
@@ -827,12 +769,6 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 				glBindTexture(GL_TEXTURE_2D, atlases[z * squaresX + x]);
 				glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 3);
 			}
-		}
-		if (unit && marker != 0) {
-			glUseProgram(marker);
-			glUniform4f(glGetUniformLocation(marker, "position"), unitX, unitY, unitZ, 1);
-			glUniform3f(glGetUniformLocation(marker, "tint"), 1, selected ? 1 : 0.52f, selected ? 1 : 0.14f);
-			glDrawArrays(GL_POINTS, 0, 1);
 		}
 		if (!checked) {
 			unsigned char rgba[4] = {};
@@ -850,8 +786,6 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		glDeleteTextures(atlases.size() - 1, atlases.data() + 1);
 	glDeleteBuffers(1, &buffer);
 	glDeleteVertexArrays(1, &vao);
-	if (marker != 0)
-		glDeleteProgram(marker);
 }
 #endif
 
