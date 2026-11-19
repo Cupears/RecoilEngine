@@ -1220,35 +1220,60 @@ bool CGame::Update()
 #if defined(__ANDROID__) && defined(HEADLESS)
 	static const bool matchSmoke = std::getenv("RECOIL_ANDROID_MATCH_SMOKE") != nullptr;
 	static int lastPublishedFrame = -1;
-	static uint32_t lastMove = 0;
+	static uint32_t lastOrder = 0;
 	if (matchSmoke && playing && !gameOver && !gu->spectating && gs->frameNum >= lastPublishedFrame + 5) {
 		lastPublishedFrame = gs->frameNum;
+		using namespace AndroidMatchSmoke;
+		Economy economy = {};
+		economy.energyIncome = teamHandler.Team(gu->myTeam)->resPrevIncome.energy;
+		const UnitDef* solar = unitDefHandler->GetUnitDefByName("armsolar");
 		CUnit* commander = nullptr;
 		for (CUnit* unit : unitHandler.GetActiveUnits()) {
-			if (unit->team == gu->myTeam && !unit->isDead &&
-			    unit->unitDef->customParams.find("iscommander") != unit->unitDef->customParams.end()) {
+			if (unit->team != gu->myTeam || unit->isDead)
+				continue;
+			if (!commander && unit->unitDef->customParams.find("iscommander") != unit->unitDef->customParams.end())
 				commander = unit;
-				break;
-			}
+			if (unit->unitDef == solar && economy.collectorCount < std::size(economy.collectors))
+				economy.collectors[economy.collectorCount++] = {unit->pos.x, unit->pos.z, unit->buildProgress};
 		}
-		using namespace AndroidMatchSmoke;
+		Write("economy.bin", "economy.tmp", economy);
 		const Position position = commander ? Position{commander->pos.x,
 		                                             commander->pos.y - CGround::GetHeightReal(commander->pos.x, commander->pos.z),
 		                                             commander->pos.z,
 		                                             commander->frontdir.x, commander->frontdir.z} :
 		                                      Position{-1, 0, -1, 0, 1};
 		Write("commander.bin", "commander.tmp", position);
-		Move order = {};
-		if (Read("move.bin", order) && order.sequence > lastMove) {
-			lastMove = order.sequence;
+		Order order = {};
+		if (Read("move.bin", order) && order.sequence > lastOrder) {
+			lastOrder = order.sequence;
 			if (commander && std::isfinite(order.x) && std::isfinite(order.z) &&
 			    order.x >= 0 && order.x < mapDims.mapx * SQUARE_SIZE &&
 			    order.z >= 0 && order.z < mapDims.mapy * SQUARE_SIZE) {
-				selectedUnitsHandler.ClearSelected();
-				selectedUnitsHandler.AddUnit(commander);
-				selectedUnitsHandler.GiveCommand(Command(CMD_MOVE,
-					float3(order.x, CGround::GetHeightReal(order.x, order.z), order.z)));
-				LOG("[Android match smoke] Sent commander move order");
+				const float3 target(order.x, CGround::GetHeightReal(order.x, order.z), order.z);
+				if (order.action == MoveTo) {
+					selectedUnitsHandler.ClearSelected();
+					selectedUnitsHandler.AddUnit(commander);
+					selectedUnitsHandler.GiveCommand(Command(CMD_MOVE, target));
+				} else if ((order.action == PreviewSolar || order.action == BuildSolar) && solar) {
+					const auto& options = commander->unitDef->buildOptions;
+					const bool canBuild = std::any_of(options.begin(), options.end(),
+						[](const auto& option) { return option.second == "armsolar"; });
+					BuildInfo build = {solar, target, FACING_SOUTH};
+					build.pos = CGameHelper::Pos2BuildPos(build, false);
+					CFeature* feature = nullptr;
+					const bool valid = canBuild && CGameHelper::TestUnitBuildSquare(
+						build, feature, gu->myAllyTeam, false) >= CGameHelper::BUILDSQUARE_RECLAIMABLE;
+					Write("placement.bin", "placement.tmp", Placement{order.sequence, build.pos.x, build.pos.z,
+						solar->xsize * SQUARE_SIZE * 0.5f, solar->zsize * SQUARE_SIZE * 0.5f, valid});
+					if (valid && order.action == BuildSolar) {
+						Command command(-solar->id, build.pos);
+						command.PushParam(float(FACING_SOUTH));
+						selectedUnitsHandler.ClearSelected();
+						selectedUnitsHandler.AddUnit(commander);
+						selectedUnitsHandler.GiveCommand(command);
+						LOG("[Android match smoke] Sent solar collector build order");
+					}
+				}
 			}
 		}
 	}

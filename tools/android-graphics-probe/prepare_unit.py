@@ -78,12 +78,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bar", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--commander", action="store_true", help="Prepare local Armada commander data at game scale")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--commander", action="store_true", help="Prepare local Armada commander data at game scale")
+    selection.add_argument("--solar", action="store_true", help="Prepare local Armada solar collector data at game scale")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 
-    model = "armcom" if args.commander else "legaabot"
-    mesh, textures, pieces = load_unit(args.bar / f"objects3d/Units/{model}.s3o", world_scale=args.commander)
+    model = "armsolar" if args.solar else "armcom" if args.commander else "legaabot"
+    world_scale = args.commander or args.solar
+    mesh, textures, pieces = load_unit(args.bar / f"objects3d/Units/{model}.s3o", world_scale=world_scale)
     (args.output / "unit-mesh.bin").write_bytes(mesh)
     for source, target in zip(textures, ("unit-color.rgba", "unit-material.rgba"), strict=True):
         with Image.open(args.bar / "unittextures" / source) as image:
@@ -92,7 +95,7 @@ def main():
             image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
             (args.output / target).write_bytes(image.tobytes())
 
-    if args.commander:
+    if world_scale:
         print(f"{pieces} pieces, {len(mesh) // 96} triangles, textures: {', '.join(textures)}")
         return
     (args.output / "unit-credits.txt").write_text(

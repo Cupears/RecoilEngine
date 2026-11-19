@@ -603,9 +603,9 @@ static GLuint BuildAndroidTerrainProgram(const char* name, const char* defines, 
 	return program;
 }
 
-struct AndroidCommanderModel {
+struct AndroidUnitModel {
 	GLuint program = 0, vao = 0, buffer = 0, textures[2] = {};
-	GLint camera = -1, origin = -1, facing = -1;
+	GLint camera = -1, origin = -1, facing = -1, buildScale = -1;
 	GLsizei vertices = 0;
 
 	static std::vector<unsigned char> ReadAsset(const char* path, size_t limit)
@@ -620,16 +620,17 @@ struct AndroidCommanderModel {
 		return data;
 	}
 
-	void Load()
+	void Load(const char* directory)
 	{
+		const std::string path = std::string(directory) + '/';
 		constexpr size_t stride = 8 * sizeof(float);
-		const auto mesh = ReadAsset("commander/unit-mesh.bin", 4 * 1024 * 1024);
+		const auto mesh = ReadAsset((path + "unit-mesh.bin").c_str(), 4 * 1024 * 1024);
 		if (mesh.empty() || mesh.size() % (3 * stride) != 0)
 			return;
 		constexpr int side = 1024;
 		constexpr size_t textureBytes = side * side * 4;
-		const auto color = ReadAsset("commander/unit-color.rgba", textureBytes);
-		const auto material = ReadAsset("commander/unit-material.rgba", textureBytes);
+		const auto color = ReadAsset((path + "unit-color.rgba").c_str(), textureBytes);
+		const auto material = ReadAsset((path + "unit-material.rgba").c_str(), textureBytes);
 		if (color.size() != textureBytes || material.size() != textureBytes)
 			return;
 
@@ -640,18 +641,19 @@ struct AndroidCommanderModel {
 			uniform mat4 projection;
 			uniform vec3 origin;
 			uniform vec2 facing;
+			uniform float buildScale;
 			out vec3 vuvw;
 			out vec4 vColor;
 			vec3 rotate(vec3 v) {
 				return vec3(facing.y * v.x + facing.x * v.z, v.y, -facing.x * v.x + facing.y * v.z);
 			}
 			void main() {
-				gl_Position = projection * vec4(origin + rotate(position), 1.0);
+				gl_Position = projection * vec4(origin + rotate(position * vec3(1.0, buildScale, 1.0)), 1.0);
 				vuvw = vec3(uv, 0.0);
 				vColor = vec4(rotate(normal), 1.0);
 			}
 		)glsl";
-		program = BuildAndroidTerrainProgram("commander", "", vertex, AndroidTerrainShaderSources::UnitFragment);
+		program = BuildAndroidTerrainProgram(directory, "", vertex, AndroidTerrainShaderSources::UnitFragment);
 		if (!program)
 			return;
 
@@ -683,16 +685,18 @@ struct AndroidCommanderModel {
 		camera = glGetUniformLocation(program, "projection");
 		origin = glGetUniformLocation(program, "origin");
 		facing = glGetUniformLocation(program, "facing");
+		buildScale = glGetUniformLocation(program, "buildScale");
 		vertices = mesh.size() / stride;
 	}
 
-	void Draw(const float* projection, const AndroidMatchSmoke::Position& position, float height) const
+	void Draw(const float* projection, const AndroidMatchSmoke::Position& position, float height, float progress = 1) const
 	{
 		glUseProgram(program);
 		glBindVertexArray(vao);
 		glUniformMatrix4fv(camera, 1, GL_FALSE, projection);
 		glUniform3f(origin, position.x, height, position.z);
 		glUniform2f(facing, position.forwardX, position.forwardZ);
+		glUniform1f(buildScale, std::clamp(progress, 0.06f, 1.0f));
 		glBindTexture(GL_TEXTURE_2D, textures[0]);
 		glActiveTexture(GL_TEXTURE4);
 		glBindTexture(GL_TEXTURE_2D, textures[1]);
@@ -700,7 +704,7 @@ struct AndroidCommanderModel {
 		glActiveTexture(GL_TEXTURE0);
 	}
 
-	~AndroidCommanderModel()
+	~AndroidUnitModel()
 	{
 		if (!program)
 			return;
@@ -855,12 +859,14 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		"uniform vec3 tint; uniform bool ring; out vec4 color; void main() {"
 		"float distance = length(gl_PointCoord - vec2(0.5));"
 		"if (distance > 0.48 || (ring && distance < 0.38)) discard; color = vec4(tint, 1.0); }");
-	AndroidCommanderModel commander;
-	commander.Load();
+	AndroidUnitModel commander, solarModel;
+	commander.Load("commander");
+	solarModel.Load("solar");
 	using namespace AndroidMatchSmoke;
 	std::optional<Position> unit;
 	Uint32 nextPositionRead = 0;
 	uint32_t moveSequence = 0;
+	Economy economy = {};
 	bool selected = false;
 	glEnable(GL_DEPTH_TEST);
 	glClearColor(0.06f, 0.08f, 0.12f, 1);
@@ -911,6 +917,9 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		const Uint32 now = SDL_GetTicks();
 		if (SDL_TICKS_PASSED(now, nextPositionRead)) {
 			nextPositionRead = now + 150;
+			Economy update = {};
+			if (Read("skirmish/economy.bin", update) && update.collectorCount <= std::size(update.collectors))
+				economy = update;
 			Position position = {};
 			unit.reset();
 			if (Read("skirmish/commander.bin", position) &&
@@ -957,9 +966,8 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 							below = mid;
 					}
 					const TouchPoint destination = atHeight(below);
-					if (Write("skirmish/move.bin", "skirmish/move.tmp",
-					          Move{++moveSequence, destination.x, destination.y}))
-						SDL_Log("Recoil Android queued commander move");
+					Write("skirmish/move.bin", "skirmish/move.tmp",
+					      Order{++moveSequence, destination.x, destination.y, MoveTo});
 					break;
 				}
 			}
@@ -978,6 +986,14 @@ static void DrawAndroidTerrainSquare(SDL_Window* window, GLuint program)
 		}
 		if (unit && commander.program)
 			commander.Draw(matrix, *unit, unitGroundY);
+		if (solarModel.program) {
+			for (uint32_t i = 0; i < economy.collectorCount; ++i) {
+				const SolarCollector& solar = economy.collectors[i];
+				if (std::isfinite(solar.x) && std::isfinite(solar.z) && std::isfinite(solar.progress))
+					solarModel.Draw(matrix, Position{solar.x, 0, solar.z, 0, 1},
+						groundHeight(solar.x, solar.z), solar.progress);
+			}
+		}
 		if (unit && marker != 0) {
 			glDisable(GL_DEPTH_TEST);
 			glUseProgram(marker);

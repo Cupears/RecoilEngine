@@ -11,9 +11,28 @@ namespace AndroidMatchSmoke {
 		float forwardX, forwardZ;
 	};
 
-	struct Move {
+	enum Action : uint32_t { MoveTo, PreviewSolar, BuildSolar };
+
+	struct Order {
 		uint32_t sequence;
 		float x, z;
+		Action action;
+	};
+
+	struct Placement {
+		uint32_t sequence;
+		float x, z, halfWidth, halfDepth;
+		uint32_t valid;
+	};
+
+	struct SolarCollector {
+		float x, z, progress;
+	};
+
+	struct Economy {
+		float energyIncome;
+		uint32_t collectorCount;
+		SolarCollector collectors[32];
 	};
 
 	template<typename T>

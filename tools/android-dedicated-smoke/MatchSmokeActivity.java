@@ -22,7 +22,9 @@ public final class MatchSmokeActivity extends SDLActivity {
             return;
         }
         try (FileOutputStream position = new FileOutputStream(new File(directory, "commander.bin"));
-             FileOutputStream order = new FileOutputStream(new File(directory, "move.bin"))) {
+             FileOutputStream order = new FileOutputStream(new File(directory, "move.bin"));
+             FileOutputStream placement = new FileOutputStream(new File(directory, "placement.bin"));
+             FileOutputStream economy = new FileOutputStream(new File(directory, "economy.bin"))) {
             // Reset both files before either process starts.
         } catch (IOException error) {
             super.onCreate(state);
